@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="es" xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="UTF-8">
+  <title>Nueva Reserva</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2rem; color: #222; }
+    form { max-width: 420px; }
+    label { display: block; margin-top: .75rem; }
+    input, select { width: 100%; padding: .3rem; box-sizing: border-box; }
+    button { margin-top: 1rem; }
+    .error { color: #b00020; background: #fde8eb; padding: .5rem; }
+    .campo-error { color: #b00020; font-size: .85rem; }
+  </style>
+</head>
+<body>
+  <h1>Nueva Reserva</h1>
+
+  <p class="error" th:if="${error}" th:text="${error}"></p>
+
+  <p th:if="${#lists.isEmpty(laboratorios)}">
+    No hay laboratorios registrados. Créelos primero con <code>POST /api/laboratorios</code>.
+  </p>
+
+  <form th:action="@{/reservas}" th:object="${reserva}" method="post">
+    <label>Laboratorio
+      <select name="laboratorio.id">
+        <option th:each="lab : ${laboratorios}" th:value="${lab.id}"
+                th:text="${lab.nombre + ' - ' + lab.ubicacion}"
+                th:selected="${reserva.laboratorio != null and reserva.laboratorio.id == lab.id}"></option>
+      </select>
+    </label>
+    <label>Nombre solicitante
+      <input type="text" th:field="*{nombreSolicitante}"/>
+    </label>
+    <span class="campo-error" th:if="${#fields.hasErrors('nombreSolicitante')}" th:errors="*{nombreSolicitante}"></span>
+    <label>Correo
+      <input type="email" th:field="*{correoSolicitante}"/>
+    </label>
+    <span class="campo-error" th:if="${#fields.hasErrors('correoSolicitante')}" th:errors="*{correoSolicitante}"></span>
+    <label>Inicio
+      <input type="datetime-local" th:field="*{inicio}"/>
+    </label>
+    <span class="campo-error" th:if="${#fields.hasErrors('inicio')}" th:errors="*{inicio}"></span>
+    <label>Fin
+      <input type="datetime-local" th:field="*{fin}"/>
+    </label>
+    <span class="campo-error" th:if="${#fields.hasErrors('fin')}" th:errors="*{fin}"></span>
+    <label>Motivo
+      <input type="text" th:field="*{motivo}"/>
+    </label>
+    <button type="submit">Reservar</button>
+  </form>
+
+  <p><a th:href="@{/reservas}">Volver al listado</a></p>
+</body>
+</html>
