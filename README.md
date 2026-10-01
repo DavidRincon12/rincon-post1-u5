@@ -2,9 +2,25 @@
 
 ## Descripción
 Repositorio del post-contenido de la Unidad 5 de Patrones de Diseño de
-Software. Proyecto Spring Boot (`reservas-labs-api`) para la reserva de
-laboratorios de cómputo de la universidad: estudiantes y docentes reservan
-un laboratorio en un horario específico para una práctica o un proyecto.
+Software. Un único proyecto Spring Boot (`reservas-labs-api`) para la
+reserva de laboratorios de cómputo de la universidad, donde estudiantes y
+docentes reservan un laboratorio en un horario específico para una práctica
+o un proyecto. Tiene dos partes: una API REST en capas (Entity, Repository,
+Service, Controller) sobre H2, y una vista Thymeleaf (MVC clásico) que
+reutiliza el mismo Service.
+
+```
+             Navegador (HTML)                  Cliente REST (JSON)
+                    |                                  |
+        web/ReservaWebController          controller/ReservaController
+        web/ReservaWebExceptionHandler    exception/GlobalRestExceptionHandler
+                    \                                  /
+                     +------ service/ReservaService ---+
+                                     |
+                repository/ReservaRepository, LaboratorioRepository
+                                     |
+                               H2 (en memoria)
+```
 
 ## Parte 1 — Repository, Service y Controller REST
 
@@ -45,6 +61,23 @@ Mapeo de excepciones en `GlobalRestExceptionHandler`:
 | `RecursoNoEncontradoException` | 404 | El laboratorio o la reserva no existen. |
 | `ReservaConflictException` | 409 | La reserva choca con datos existentes (solapamiento, cancelación no permitida). |
 
+## Parte 2 — Vista MVC con Thymeleaf
+
+`ReservaWebController` (paquete `web/`, anotado con `@Controller`) expone
+`/reservas` y devuelve vistas Thymeleaf de `templates/reservas/`. Recibe por
+constructor la misma clase `ReservaService` que usa la API REST, así que no
+existe un Service duplicado para la vista. `ReservaWebExceptionHandler`
+maneja las mismas excepciones de dominio que `GlobalRestExceptionHandler`,
+pero las presenta como una redirección con un mensaje en la página en lugar
+de un cuerpo JSON.
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| GET | `/reservas` | Lista de reservas con mensaje de éxito o error. |
+| GET | `/reservas/nueva` | Formulario con el combo de laboratorios cargado desde la base de datos. |
+| POST | `/reservas` | Crea la reserva. Si hay errores de formato se vuelve a mostrar el formulario con los mensajes por campo; si falla una regla de negocio redirige al formulario con el mensaje. |
+| POST | `/reservas/{id}/cancelar` | Cancela la reserva y vuelve al listado con el resultado. |
+
 ## Cómo ejecutar
 Requisitos: Java 17 o superior y Maven 3.8+.
 
@@ -54,12 +87,18 @@ mvn spring-boot:run
 ```
 
 - API REST: http://localhost:8080/api/reservas
+- Vista MVC: http://localhost:8080/reservas
 - Consola H2: http://localhost:8080/h2-console (JDBC URL `jdbc:h2:mem:reservas_labs_db`, usuario `sa`, sin contraseña)
 
-Pruebas unitarias del Service:
+La base de datos arranca vacía: antes de usar el formulario hay que crear
+al menos un laboratorio con `POST /api/laboratorios` (ver ejemplo abajo).
+
+Pruebas (unitarias del Service y de integración de la vista MVC y la API):
 
 ```
 mvn test
+...
+Tests run: 14, Failures: 0, Errors: 0, Skipped: 0
 ```
 
 ### Verificación con curl
@@ -164,7 +203,111 @@ justifique, como ocurre con las reservas, y no por seguir la plantilla de
 capas de forma mecánica. Si más adelante aparece una regla (por ejemplo, no
 repetir nombres de laboratorio), ese sería el momento de introducirla.
 
+### Punto de decisión 3 — Cómo comparten Service el Controller MVC y el REST
+Los dos controladores declaran una dependencia de tipo `ReservaService` y la
+reciben por constructor:
+
+- `controller/ReservaController.java`, líneas 15 y 17:
+  `public ReservaController(ReservaService service)`
+- `web/ReservaWebController.java`, líneas 19 y 22:
+  `public ReservaWebController(ReservaService service, LaboratorioRepository laboratorioRepo)`
+
+Spring crea un único bean singleton de `ReservaService`, de modo que ambos
+reciben la misma instancia. Ningún controlador repite la validación de
+solapamiento, horario, duración o cancelación: `ReservaWebController` solo
+traduce el formulario a una `Reserva`, llama a `service.crear(...)` o
+`service.cancelar(...)` y decide a qué vista ir.
+
+La alternativa descartada era copiar las validaciones dentro de
+`ReservaWebController` o crear un `ReservaWebService` casi idéntico. Con
+eso, cambiar una regla (por ejemplo, ampliar el horario hasta las 22:00)
+obligaría a modificar dos clases, y si se olvidaba una, la API y la página
+aceptarían reservas distintas para el mismo laboratorio. La prueba
+`ReservaWebControllerTest` deja esto verificado: envía la misma reserva
+solapada por `/reservas` y por `/api/reservas` y comprueba que en ambos
+casos el mensaje es exactamente "El laboratorio Lab. Redes ya tiene una
+reserva en ese horario".
+
+Lo que sí es propio de cada controlador es la validación de formato: los
+dos usan `@Valid` sobre la misma entidad, pero REST responde 400 con la lista
+de errores y MVC vuelve a pintar el formulario con el mensaje bajo cada
+campo.
+
+### Punto de decisión 4 — Manejo de errores consistente entre MVC y REST
+Uso dos manejadores, cada uno restringido a su superficie:
+
+- `GlobalRestExceptionHandler`: `@RestControllerAdvice(annotations = RestController.class)`,
+  responde JSON con 400, 404 o 409.
+- `ReservaWebExceptionHandler`: `@ControllerAdvice(assignableTypes = ReservaWebController.class)`,
+  guarda el mensaje como atributo flash y redirige a `/reservas/nueva` si
+  falló una creación o a `/reservas` si falló una cancelación o no se
+  encontró el recurso.
+
+Un único `@RestControllerAdvice` global no sirve porque siempre serializa
+la respuesta a JSON, y el navegador necesita una página HTML con un mensaje
+legible. Un único manejador que revise el header `Accept` para decidir entre
+JSON y redirección es posible, pero cada método tendría un `if` para las
+dos presentaciones y mezclaría dos responsabilidades en la misma clase. Con
+dos manejadores se mantiene la misma separación del resto del proyecto: una
+clase de presentación por superficie, y las dos alimentadas por el mismo
+vocabulario de excepciones (`ReservaConflictException`,
+`ReservaInvalidaException`, `RecursoNoEncontradoException`). Como el texto
+del mensaje lo construye el Service, el usuario ve el mismo mensaje de
+negocio en la página y en el JSON (capturas 02 y 05); solo cambia el
+formato.
+
+## Capturas de pantalla
+
+### API REST
+Reserva creada (201):
+
+![Reserva creada con curl](docs/capturas/01-rest-201-creada.png)
+
+Solapamiento (409), fuera de horario (400) y duración inválida (400):
+
+![Errores REST](docs/capturas/02-rest-409-400-errores.png)
+
+`GET /api/reservas`:
+
+![Listado JSON](docs/capturas/03-rest-get-reservas.png)
+
+### Vista MVC
+Formulario `/reservas/nueva` con los laboratorios cargados desde la base de datos:
+
+![Formulario nueva reserva](docs/capturas/04-mvc-formulario-nueva.png)
+
+Intento de reserva solapada desde el formulario: se muestra el mismo mensaje
+que devuelve la API en la captura 02.
+
+![Error de solapamiento en MVC](docs/capturas/05-mvc-error-solapamiento.png)
+
+Reserva creada en un horario libre:
+
+![Listado con reserva creada](docs/capturas/06-mvc-lista-reserva-creada.png)
+
+Reserva cancelada desde el listado:
+
+![Reserva cancelada](docs/capturas/07-mvc-reserva-cancelada.png)
+
+### Consola H2
+Tablas `laboratorios` y `reservas` con la clave foránea `laboratorio_id`:
+
+![Consola H2](docs/capturas/08-h2-console-tablas.png)
+
 ## Herramientas utilizadas
-- Java 17, Spring Boot 3.2, Spring Data JPA, H2, Bean Validation, Lombok
-- JUnit 5 y Mockito
+- Java 17, Spring Boot 3.2, Spring Data JPA, H2, Thymeleaf, Bean Validation, Lombok
+- JUnit 5, Mockito y MockMvc
 - Apache Maven, curl, Git, GitHub
+
+## Conclusiones
+Lo más importante de este laboratorio fue ver que la capa Service se
+justifica por las reglas que contiene y no por la plantilla de capas: por
+eso `ReservaService` existe y `LaboratorioService` no. Lo más difícil de
+decidir fue la regla de solapamiento, porque toca dos capas a la vez; la
+separé pensando en qué pregunta responde cada una (el Repository dice qué
+reservas se cruzan, el Service decide si eso impide crear la reserva).
+También me ayudó separar las reglas que dependen solo del objeto de las que
+dependen de otros registros, porque de ahí salieron tanto la ubicación del
+código como la diferencia entre el 400 y el 409. En la Parte 2 se notó el
+beneficio de esa separación: agregar la vista Thymeleaf no requirió tocar
+ninguna regla, solo un controlador y un manejador de errores nuevos.
